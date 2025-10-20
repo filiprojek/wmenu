@@ -85,11 +85,11 @@ static bool parse_color(const char *color, uint32_t *result) {
 // Parse menu options from command line arguments.
 void menu_getopts(struct menu *menu, int argc, char *argv[]) {
 	const char *usage =
-		"Usage: wmenu [-biPv] [-f font] [-l lines] [-o output] [-p prompt]\n"
+		"Usage: wmenu [-bFiPv] [-f font] [-l lines] [-o output] [-p prompt]\n"
 		"\t[-N color] [-n color] [-M color] [-m color] [-S color] [-s color]\n";
 
 	int opt;
-	while ((opt = getopt(argc, argv, "bhiPvf:l:o:p:N:n:M:m:S:s:")) != -1) {
+	while ((opt = getopt(argc, argv, "bhiPFvf:l:o:p:N:n:M:m:S:s:")) != -1) {
 		switch (opt) {
 		case 'b':
 			menu->bottom = true;
@@ -99,6 +99,9 @@ void menu_getopts(struct menu *menu, int argc, char *argv[]) {
 			break;
 		case 'P':
 			menu->passwd = true;
+			break;
+		case 'F':
+			menu->fuzzy = true;
 			break;
 		case 'v':
 			puts("wmenu " VERSION);
@@ -293,6 +296,120 @@ static void append_match(struct item *item, struct item **first, struct item **l
 	*last = item;
 }
 
+struct fuzzy_match {
+	struct item *item;
+	int score;
+	size_t index;
+};
+
+static char normalize_char(struct menu *menu, char c) {
+	if (menu->strncmp == strncasecmp) {
+		return (char)tolower((unsigned char)c);
+	}
+	return c;
+}
+
+static bool fuzzy_match(struct menu *menu, const char *text, const char *pattern, int *score) {
+	if (!pattern[0]) {
+		*score = 0;
+		return true;
+	}
+	int start = -1;
+	int last = -1;
+	int total_gap = 0;
+	int idx = 0;
+	for (size_t pi = 0; pattern[pi]; pi++) {
+		char pc = normalize_char(menu, pattern[pi]);
+		bool found = false;
+		for (; text[idx]; idx++) {
+			char tc = normalize_char(menu, text[idx]);
+			if (tc == pc) {
+				if (start == -1) {
+					start = idx;
+				} else {
+					total_gap += idx - last - 1;
+				}
+				last = idx;
+				idx++;
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			return false;
+		}
+	}
+	if (start == -1) {
+		return false;
+	}
+	int span = last - start;
+	*score = start * 2048 + total_gap * 128 + span;
+	return true;
+}
+
+static int compare_fuzzy(const void *a, const void *b) {
+	const struct fuzzy_match *ma = a;
+	const struct fuzzy_match *mb = b;
+	if (ma->score != mb->score) {
+		return (ma->score > mb->score) - (ma->score < mb->score);
+	}
+	if (ma->index < mb->index) {
+		return -1;
+	}
+	if (ma->index > mb->index) {
+		return 1;
+	}
+	return 0;
+}
+
+static void fuzzy_match_items(struct menu *menu) {
+	struct fuzzy_match *matches = NULL;
+	size_t match_count = 0;
+	size_t match_capacity = 0;
+	for (size_t k = 0; k < menu->item_count; k++) {
+		struct item *item = &menu->items[k];
+		int score;
+		if (!fuzzy_match(menu, item->text, menu->input, &score)) {
+			continue;
+		}
+		if (match_count == match_capacity) {
+			size_t new_capacity = match_capacity ? match_capacity * 2 : 16;
+			void *new_matches = realloc(matches, new_capacity * sizeof(*matches));
+			if (!new_matches) {
+				fprintf(stderr, "could not realloc %zu bytes", new_capacity * sizeof(*matches));
+				exit(EXIT_FAILURE);
+			}
+			match_capacity = new_capacity;
+			matches = new_matches;
+		}
+		matches[match_count].item = item;
+		matches[match_count].score = score;
+		matches[match_count].index = k;
+		match_count++;
+	}
+	if (match_count == 0) {
+		free(matches);
+		menu->matches = NULL;
+		menu->matches_end = NULL;
+		return;
+	}
+	qsort(matches, match_count, sizeof(*matches), compare_fuzzy);
+	menu->matches = matches[0].item;
+	menu->matches->prev_match = NULL;
+	menu->matches->next_match = NULL;
+	struct item *prev = menu->matches;
+	for (size_t i = 1; i < match_count; i++) {
+		struct item *item = matches[i].item;
+		item->prev_match = prev;
+		item->next_match = NULL;
+		prev->next_match = item;
+		prev = item;
+	}
+	prev->next_match = NULL;
+	menu->matches_end = prev;
+	free(matches);
+}
+
 static void match_items(struct menu *menu) {
 	struct item *lexact = NULL, *exactend = NULL;
 	struct item *lprefix = NULL, *prefixend = NULL;
@@ -307,6 +424,14 @@ static void match_items(struct menu *menu) {
 	menu->sel = NULL;
 
 	size_t input_len = strlen(menu->input);
+	if (menu->fuzzy && input_len > 0) {
+		fuzzy_match_items(menu);
+		page_items(menu);
+		if (menu->pages) {
+			menu->sel = menu->pages->first;
+		}
+		return;
+	}
 
 	/* tokenize input by space for matching the tokens individually */
 	strcpy(buf, menu->input);
@@ -315,7 +440,7 @@ static void match_items(struct menu *menu) {
 		tokv = realloc(tokv, (tokc + 1) * sizeof *tokv);
 		if (!tokv) {
 			fprintf(stderr, "could not realloc %zu bytes",
-					(tokc + 1) * sizeof *tokv);
+				(tokc + 1) * sizeof *tokv);
 			exit(EXIT_FAILURE);
 		}
 		tokv[tokc] = tok;
@@ -375,7 +500,6 @@ static void match_items(struct menu *menu) {
 		menu->sel = menu->pages->first;
 	}
 }
-
 // Marks the menu as needing to be rendered again.
 void menu_invalidate(struct menu *menu) {
 	menu->rendered = false;

@@ -35,6 +35,8 @@ struct menu {
 	int (*strncmp)(const char *, const char *, size_t);
 	// Whether the input is a password
 	bool passwd;
+	// Enable fuzzy matching
+	bool fuzzy;
 	// The font used to display the menu
 	char *font;
 	// The number of lines to list items vertically

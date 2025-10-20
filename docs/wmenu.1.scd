@@ -6,7 +6,7 @@ wmenu - dynamic menu for Wayland
 
 # SYNOPSIS
 
-*wmenu* [-biPv] \
+*wmenu* [-bFiPv] \
   [-f _font_] \
   [-l _lines_] \
   [-o _output_] \
@@ -38,6 +38,9 @@ $PATH and runs the result.
 *-P*
 	wmenu will not directly display the keyboard input, but instead replace it
 	with asterisks.
+
+*-F*
+	enables fuzzy matching, ranking results by how closely they match the input.
 
 *-v*
 	prints version information to stdout, then exits.
